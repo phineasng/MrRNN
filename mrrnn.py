@@ -3,6 +3,20 @@ import numpy as np
 
 class Configuration:
 	def __init__(self):
+		self.word_emb_size = 50
+		self.coarse_emb_size = 50
+		self.word_vocab_size = 10
+		self.coarse_vocab_size = 10
+		self.word_encoder_hid_size = 100
+		self.coarse_encoder_hid_size = 100
+		self.word_context_hid_size = 100
+		self.coarse_context_hid_size = 100
+		self.coarse_decoder_hid_size = 100
+		self.word_decoder_hid_size = 100
+		self.prediction_encoder_hid_size = 100
+		self.learning_rate = 0.0002
+		self.end_of_word_utt = 0
+		self.end_of_coarse_utt = 0
 		return
 
 class MRRNN:
@@ -15,7 +29,6 @@ class MRRNN:
 
 	"""
 	def __init__(self,config):
-
 		self.word_emb_size = config.word_emb_size
 		self.coarse_emb_size = config.coarse_emb_size
 		self.word_vocab_size = config.word_vocab_size
@@ -24,16 +37,12 @@ class MRRNN:
 		self.coarse_context_hid_size = config.coarse_context_hid_size
 		self.word_encoder_hid_size = config.word_encoder_hid_size
 		self.coarse_encoder_hid_size = config.coarse_encoder_hid_size
-		# the coarse context hidden state need to be multiplied to the hidden states 
-		# of the decoder -> they have to be of the same size
-		self.coarse_decoder_hid_size = config.coarse_context_hid_size
-		# the concatenated states of the word context and the coarse prediction 
-		#	encoder have to be multiplied with the hidden states of the word
-		# decoder
-		self.word_decoder_hid_size =\
-		 config.word_context_hid_size + config.prediction_encoder_hid_size 
+		self.coarse_decoder_hid_size = config.coarse_decoder_hid_size
+		self.word_decoder_hid_size = config.word_decoder_hid_size
 		self.prediction_encoder_hid_size = config.prediction_encoder_hid_size
 		self.learning_rate = config.learning_rate
+		self.end_of_word_utt = config.end_of_word_utt
+		self.end_of_coarse_utt = config.end_of_coarse_utt
 
 		# inputs - a single utterance for each sub-model
 		self.input_word = tf.placeholder(tf.int32,[None],name="word_embedding")
@@ -60,6 +69,8 @@ class MRRNN:
 				tf.float32,[1,self.word_context_hid_size],\
 				name="previous_word_context")
 
+		self.eou_coarse = tf.constant(config.end_of_coarse_utt,dtype=tf.int64)
+		self.eou_word = tf.constant(config.end_of_word_utt,dtype=tf.int64)
 
 		# create embedding variables
 		self.word_embedding =\
@@ -90,6 +101,9 @@ class MRRNN:
 
 		# visualize graph for debugging
 		self.writer = tf.train.SummaryWriter("./log",graph=self.sess.graph)
+
+		# saver
+		self.saver = tf.train.Saver()
 
 	def _get_embedded_coarse_input(self):
 
@@ -158,33 +172,28 @@ class MRRNN:
 		return hidden[-1,:]
 
 	def decoder_coarse_condition(self,it,outputs,hidden):
-		return it[0] < self.output_coarse_length[0] - 1
+		return it[0] < self.output_coarse_length[0]
 	
 	def decoder_word_condition(self,it,outputs,hidden):
-		return it[0] < self.output_word_length[0]	- 1
+		return it[0] < self.output_word_length[0]
 
 	def decoder_coarse_func(self,it,outputs,hidden):
 		# hidden state is multiplied with the context hidden state 
 		out,hidden = self.decoder_coarse_cell(\
-				tf.pack([outputs[-1,:]]),\
-				tf.pack([tf.mul(hidden,self.context_coarse_current_hidden)]))
+				tf.pack([tf.concat(0,[outputs[-1,:],self.context_coarse_current_hidden])]),\
+				tf.pack([hidden]))
 		
-		if it == 0:
-			outputs = tf.identity(out)
-		else:
-			outputs = tf.concat(0,[outputs,out])
+		
+		outputs = tf.concat(0,[outputs,out])
 		return it+1,outputs,hidden[0,:]
 
 	def decoder_word_func(self,it,outputs,hidden):
 		# hidden state is multiplied with the context hidden state 
 		out,hidden = self.decoder_word_cell(\
-				tf.pack([outputs[-1,:]]),\
-				tf.pack([tf.mul(hidden,self.word_context_concatenation)]))
+				tf.pack([tf.concat(0,[outputs[-1,:],self.word_context_concatenation])]),\
+				tf.pack([hidden]))
 		
-		if it == 0:
-			outputs = tf.identity(out)
-		else:
-			outputs = tf.concat(0,[outputs,out])
+		outputs = tf.concat(0,[outputs,out])
 		return it+1,outputs,hidden[0,:]
 
 	def _create_coarse_decoder(self):
@@ -192,7 +201,8 @@ class MRRNN:
 			self.decoder_coarse_cell =\
 					 tf.nn.rnn_cell.GRUCell(self.coarse_decoder_hid_size)
 			self.iter_decoder_coarse = tf.constant(0)
-			result = tf.while_loop(\
+			self.iter_decoder_coarse_test = tf.constant(0)
+			train_decoder = tf.while_loop(\
 				self.decoder_coarse_condition,\
 				self.decoder_coarse_func,\
 				[	self.iter_decoder_coarse,\
@@ -201,15 +211,16 @@ class MRRNN:
 				shape_invariants=[\
 								self.iter_decoder_coarse.get_shape(),\
 								tf.TensorShape([None,self.coarse_decoder_hid_size]),\
-								self.context_coarse_current_hidden.get_shape()])
-		return result[1]
+								tf.TensorShape([self.coarse_decoder_hid_size])])		
+			return train_decoder[1][1:]
 
 	def _create_word_decoder(self):
 		with tf.variable_scope("word_decoder"):
 			self.decoder_word_cell =\
 					 tf.nn.rnn_cell.GRUCell(self.word_decoder_hid_size)
 			self.iter_decoder_word = tf.constant(0)
-			result = tf.while_loop(\
+			self.iter_decoder_word_test = tf.constant(0)
+			train_decoder = tf.while_loop(\
 				self.decoder_word_condition,\
 				self.decoder_word_func,\
 				[	self.iter_decoder_word,\
@@ -218,8 +229,9 @@ class MRRNN:
 				shape_invariants=[\
 								self.iter_decoder_word.get_shape(),\
 								tf.TensorShape([None,self.word_decoder_hid_size]),\
-								self.word_context_concatenation.get_shape()])
-		return result[1]
+								tf.TensorShape([self.word_decoder_hid_size])])
+			
+		return train_decoder[1][1:]
 
 	def _create_prediction_encoder(self):
 		with tf.variable_scope("prediction_encoder"):
@@ -298,7 +310,7 @@ class MRRNN:
 
 		#print map_word.get_shape()
 		#print map_coarse.get_shape()
-		self.loss = - tf.reduce_sum(map_word) - tf.reduce_sum(map_coarse)
+		self.loss = (tf.reduce_sum(map_word) + tf.reduce_sum(map_coarse))
 		self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 
 	def _create_grad_accumul_op(self):
@@ -312,13 +324,28 @@ class MRRNN:
 		self.zero_grads = zero_ops
 		self.grad_accumul = accum_ops
 		self.grad_apply = self.optimizer.apply_gradients(\
-			[(accum_vars[i].assign(accum_vars[i]), gv[1]) for i, gv in enumerate(gvs)])
+			[(accum_vars[i], gv[1])\
+					 for i, gv in enumerate(gvs)])
 
+	def split_utterances(self,X_word,X_coarse):
+		n_dialogues = len(X_word)
+		dialogues_word = []
+		dialogues_coarse = []
+		for i in xrange(n_dialogues):
+			# split utterances
+			end_of_utts_word = np.where( np.array(X_word[i]) == self.end_of_word_utt )[0]
+			end_of_utts_coarse = np.where( np.array(X_coarse[i]) == self.end_of_coarse_utt )[0]
+			current_dialogue_word = np.split( X_word[i], end_of_utts_word[:-1] + 1 )
+			current_dialogue_coarse = np.split( X_coarse[i], end_of_utts_coarse[:-1] + 1 )
+			dialogues_word.append(current_dialogue_word)
+			dialogues_coarse.append(current_dialogue_coarse)
+
+		return dialogues_word,dialogues_coarse
 
 	def partial_fit(self,X_word,X_coarse): #
 		""" Train model
 			
-		X_word is a list of utterances of ONE dialogue
+		X_word is a batch of dialogues
 		X_coarse is the corresponding list of coarse utterances
 
 		The length of the two lists must be the same
@@ -326,60 +353,133 @@ class MRRNN:
 		TEMPORARY IMPLEMENTATION: the model is updated after each utterances' pair
 		"""
 
-		# reset context state
+		# reset gradient computation
 		self.sess.run(self.zero_grads)
-		for u_id in xrange(len(X_word)-1):
+		# split dialogues
+		dialogues_word, dialogues_coarse = self.split_utterances(X_word,X_coarse)
+		# train
+		for dialogue in xrange(len(dialogues_word)):
+			for u_id in xrange(len(dialogues_word[dialogue])-1):
+				if u_id == 0:
+					prev_coarse = np.zeros([1,self.coarse_context_hid_size])
+					prev_word = np.zeros([1,self.word_context_hid_size])
+				feed_dict = {\
+					self.input_word: dialogues_word[dialogue][u_id],\
+					self.input_coarse: dialogues_coarse[dialogue][u_id],\
+					self.target_labels_word: dialogues_word[dialogue][u_id+1],\
+					self.target_labels_coarse: dialogues_coarse[dialogue][u_id+1],\
+					self.output_word_length: [len(dialogues_word[dialogue][u_id+1])],\
+					self.output_coarse_length: [len(dialogues_coarse[dialogue][u_id+1])],\
+					self.previous_coarse_context: prev_coarse, \
+					self.previous_word_context: prev_word\
+				}
+				prev_coarse,prev_word,_=self.sess.run(\
+						(\
+							self.context_coarse_current_hidden,\
+							self.context_word_current_hidden,\
+							self.grad_accumul),\
+						feed_dict=feed_dict)
+				prev_coarse = [prev_coarse]
+				prev_word = [prev_word]
+		self.sess.run(self.grad_apply)
+
+	def cost(self,X_word,X_coarse):
+		dialogues_word, dialogues_coarse = self.split_utterances(X_word,X_coarse)
+		for dialogue in xrange(len(dialogues_word)):
+			for u_id in xrange(len(dialogues_word[dialogue])-1):
+				if u_id == 0:
+					prev_coarse = np.zeros([1,self.coarse_context_hid_size])
+					prev_word = np.zeros([1,self.word_context_hid_size])
+					total_loss = 0
+				feed_dict = {\
+					self.input_word: dialogues_word[dialogue][u_id],\
+					self.input_coarse: dialogues_coarse[dialogue][u_id],\
+					self.target_labels_word: dialogues_word[dialogue][u_id+1],\
+					self.target_labels_coarse: dialogues_coarse[dialogue][u_id+1],\
+					self.output_word_length: [len(dialogues_word[dialogue][u_id+1])],\
+					self.output_coarse_length: [len(dialogues_coarse[dialogue][u_id+1])],\
+					self.previous_coarse_context: prev_coarse, \
+					self.previous_word_context: prev_word\
+				}
+				prev_coarse,prev_word,loss=self.sess.run(\
+						(\
+							self.context_coarse_current_hidden,\
+							self.context_word_current_hidden,\
+							self.loss),\
+						feed_dict=feed_dict)
+				prev_coarse = [prev_coarse]
+				prev_word = [prev_word]
+				total_loss += loss
+		total_loss /= float(len(X_word))
+		return total_loss 
+
+	def generate(self,dialogue_word,dialogue_coarse,\
+				max_coarse_generation=10,max_word_generation=10): #
+
+		for u_id in xrange(len(dialogue_word)-1):
 			if u_id == 0:
 				prev_coarse = np.zeros([1,self.coarse_context_hid_size])
 				prev_word = np.zeros([1,self.word_context_hid_size])
-				total_loss = 0
 			feed_dict = {\
-				self.input_word: X_word[u_id],\
-				self.input_coarse: X_coarse[u_id],\
-				self.target_labels_word: X_word[u_id+1],\
-				self.target_labels_coarse: X_coarse[u_id+1],\
-				self.output_word_length: [len(X_word[u_id+1])],\
-				self.output_coarse_length: [len(X_coarse[u_id+1])],\
+				self.input_word: dialogue_word[u_id],\
+				self.input_coarse: dialogue_coarse[u_id],\
+				self.target_labels_word: dialogue_word[u_id+1],\
+				self.target_labels_coarse: dialogue_coarse[u_id+1],\
+				self.output_word_length: [len(dialogue_word[u_id+1])],\
+				self.output_coarse_length: [len(dialogue_coarse[u_id+1])],\
 				self.previous_coarse_context: prev_coarse, \
 				self.previous_word_context: prev_word\
 			}
-			prev_coarse,prev_word,loss,_=self.sess.run(\
+			prev_coarse,prev_word=self.sess.run(\
 					(\
 						self.context_coarse_current_hidden,\
-						self.context_word_current_hidden,\
-						self.loss,\
-						self.grad_accumul),\
+						self.context_word_current_hidden),\
 					feed_dict=feed_dict)
 			prev_coarse = [prev_coarse]
 			prev_word = [prev_word]
-			total_loss += loss
-			#print prev_coarse,result
-			#print self.context_persistent_coarse
-			#self.sess.run(self.reset_counters,feed_dict=feed_dict)
-		print total_loss
-		self.sess.run(self.grad_apply)
+		u_id = len(dialogue_word)-1
+		feed_dict = {\
+			self.input_word: dialogue_word[u_id],\
+			self.input_coarse: dialogue_coarse[u_id],\
+			self.previous_coarse_context: prev_coarse, \
+			self.previous_word_context: prev_word,\
+			self.output_word_length: [max_word_generation],\
+			self.output_coarse_length: [max_coarse_generation]\
+		}
+		w_logits = self.sess.run(self.logits_word,feed_dict=feed_dict)
+		prediction = np.zeros([w_logits.shape[0]],dtype=int)
+		for i in xrange(len(prediction)):
+			probs = np.exp(w_logits[i])
+			probs /= probs.sum()
+			prediction[i] = np.random.choice(self.word_vocab_size,p=probs)
+		return prediction
+
+	def save(self,file_path):
+		self.saver.save(self.sess,file_path)
+
+	def restore(self,file_path):
+		self.saver.restore(self.sess,file_path)
 
 
 if __name__ == "__main__":
-	config = Configuration()
 
-	config.word_emb_size = 100
-	config.coarse_emb_size = 101
-	config.word_vocab_size = 20
-	config.coarse_vocab_size = 21
-	config.word_encoder_hid_size = 104
-	config.coarse_encoder_hid_size = 105
-	config.word_context_hid_size = 106
-	config.coarse_context_hid_size = 107
-	config.prediction_encoder_hid_size = 108
-	config.learning_rate = 0.0001
+	config = Configuration()
+	config.word_vocab_size = 11
+	config.coarse_vocab_size = 11
+	config.end_of_word_utt = 10
+	config.end_of_coarse_utt = 10
 
 	# dummy input
-	x_w = [ [5,3,1,2,5],[10,2,3,5,2,4,5],[2,4,2,1] ]
-	x_z = [ [1,1,4],[9,4,0,3],[3,4,5,2,1] ]
-	#x_w = [ [5,3,1,2,5],[5,3,1,2,5],[5,3,1,2,5] ]
-	#x_z = [ [1,1,4],[1,1,4],[1,1,4] ]
+	x_w = [ [ 3,5,8,3,10,2,3,5,9,9,10,8,7,6,1,0,10] ]
+	x_z = [ [ 2,4,1,2,7,8,10,1,6,8,8,10,9,0,0,1,10] ]
+	x_w_test = [ [3,5,8,3,10],[2,3,5,9,9,10] ] 
+	x_z_test = [ [2,4,1,2,7,8,10],[1,6,8,8,10] ]
 
 	model = MRRNN(config)
-	for i in xrange(100):
+	for i in xrange(1000):
 		model.partial_fit(x_w,x_z)
+		loss = model.cost(x_w,x_z)
+		print loss
+		prediction = model.generate(x_w_test,x_z_test,5,6)
+		# should learn to predict the sequence [8,7,6,1,1,10]
+		print prediction
