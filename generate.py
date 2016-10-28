@@ -34,17 +34,17 @@ if __name__ == "__main__":
 	config.end_of_coarse_utt = COARSE_END
 	# create model
 	model = MRRNN(config)
-	N_dialogue = 7
+	N_dialogue = 10
 
 	file_name = "./ckpts/training_5/trained.ckpt"
 	model.restore(file_name)
-	dial_word,dial_coarse = model.split_utterances(test_word_data[:N_dialogue+1],test_coarse_data[:N_dialogue+1])
-	prediction = model.generate(dial_word[N_dialogue],dial_coarse[N_dialogue],5,20)
+	dial_word,dial_coarse = model.split_utterances([test_word_data[N_dialogue]],[test_coarse_data[N_dialogue]])
+	prediction = model.generate(dial_word[0][:-1],dial_coarse[0][:-1],20,20)
 	# print dial_word[0]
-	for curr_utt in xrange(len(dial_word[N_dialogue])):
+	for curr_utt in xrange(len(dial_word[0])-1):
 		curr_str = ""
-	 	for k in xrange(len(dial_word[N_dialogue][curr_utt])-1):
-	 		curr_str += vocab_word[dial_word[N_dialogue][curr_utt][k]][0] + " "
+	 	for k in xrange(len(dial_word[0][curr_utt])-1):
+	 		curr_str += vocab_word[dial_word[0][curr_utt][k]][0] + " "
 	 	print curr_str
 
 	curr_str = ""

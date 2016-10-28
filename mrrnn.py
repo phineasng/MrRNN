@@ -178,7 +178,7 @@ class MRRNN:
 		return it[0] < self.output_word_length[0]
 
 	def decoder_coarse_func(self,it,outputs,hidden):
-		# hidden state is multiplied with the context hidden state 
+		# hidden state is concatenated with the context hidden state 
 		out,hidden = self.decoder_coarse_cell(\
 				tf.pack([tf.concat(0,[outputs[-1,:],self.context_coarse_current_hidden])]),\
 				tf.pack([hidden]))
@@ -188,7 +188,7 @@ class MRRNN:
 		return it+1,outputs,hidden[0,:]
 
 	def decoder_word_func(self,it,outputs,hidden):
-		# hidden state is multiplied with the context hidden state 
+		# hidden state is concatenated with the context hidden state 
 		out,hidden = self.decoder_word_cell(\
 				tf.pack([tf.concat(0,[outputs[-1,:],self.word_context_concatenation])]),\
 				tf.pack([hidden]))
@@ -245,41 +245,28 @@ class MRRNN:
 	def _build_graph(self):
 
 		self.coarse_representation = self._get_embedded_coarse_input()
-		#print self.coarse_representation.get_shape()
 
 		self.encoded_coarse = self._create_coarse_encoder()
-		#print self.encoded_coarse[0].get_shape()
 
 		self.context_coarse_current_hidden = self._create_coarse_context()
-		#print self.context_coarse_current_hidden.get_shape()
 
 		self.coarse_prediction = self._create_coarse_decoder()
-		#print self.coarse_prediction.get_shape()
 
 		self.encoded_prediction = self._create_prediction_encoder()
-		#print self.encoded_prediction.get_shape()
 
 		self.word_representation = self._get_embedded_word_input()
-		#print self.word_representation.get_shape()
 
 		self.encoded_word = self._create_word_encoder()
-		#print self.encoded_word[0].get_shape()
 
 		self.context_word_current_hidden = self._create_word_context()
-		#print self.context_word_current_hidden.get_shape()
 
 		self.word_context_concatenation = \
 				tf.concat(0,\
 					[self.context_word_current_hidden,self.encoded_prediction])
 
 		self.word_prediction = self._create_word_decoder()
-		#print self.word_prediction.get_shape()
 
 		self.logits_word,self.logits_coarse = self._compute_logits()
-		#print self.out_word_embedding.get_shape()
-		#print self.out_coarse_embedding.get_shape()
-		#print self.logits_word.get_shape()
-		#print self.logits_coarse.get_shape()
 
 
 	def _compute_logits(self):
@@ -308,8 +295,6 @@ class MRRNN:
 				self.logits_coarse,\
 				coarse_target_one_hot)
 
-		#print map_word.get_shape()
-		#print map_coarse.get_shape()
 		self.loss = (tf.reduce_sum(map_word) + tf.reduce_sum(map_coarse))
 		self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 

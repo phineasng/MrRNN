@@ -66,11 +66,11 @@ if __name__ == "__main__":
 	if restore_file:
 		model.restore(restore_file)
 
-	loss = model.cost(valid_word_data[:10],valid_coarse_data[:10])
+	loss = model.cost(valid_word_data[:100],valid_coarse_data[:100])
 	print loss
-	start_id = 103500
 
 	for ep in xrange(n_epochs):
+		start_id = 0
 		it = 0
 		while start_id < max_train_data_id:
 			end_id = start_id + batch_size
@@ -81,4 +81,3 @@ if __name__ == "__main__":
 				print "{0} of {1}: {2}".format(start_id,n_train,loss)
 			start_id += batch_size
 			it += 1
-		start_id = 0
